@@ -1,0 +1,7 @@
+[package]
+name = "snake"
+version = "0.1.0"
+authors = ["mark <mmansi@utexas.edu>"]
+
+[dependencies]
+cursive = "*"
