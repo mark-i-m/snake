@@ -71,11 +71,15 @@ impl State {
 
         printer.with_color(ColorStyle::HighlightInactive,
                            |printer| for loc in &self.food {
-                               printer.print(*loc, "O");
+                               printer.print(*loc, " ");
                            });
+
+        printer.print((1, 1), format!("{}", self.snake.len()).as_str());
     }
 
     pub fn step(&mut self, direction: Option<Direction>) -> EventResult {
+        use std::__rand::*;
+
         let direction = direction.unwrap_or(self.direction);
 
         let next = self.next_loc(direction);
@@ -91,7 +95,9 @@ impl State {
 
             if self.food.contains(&next) {
                 self.food.remove(&next);
-                self.add_random_food();
+                for _ in 0..std::__rand::thread_rng().gen_range(1, 4) {
+                    self.add_random_food();
+                }
             } else {
                 self.snake.pop_back();
             }
