@@ -1,5 +1,5 @@
-#![feature(rand)]
 
+extern crate rand;
 extern crate cursive;
 
 use std::collections::{LinkedList, HashSet};
@@ -29,16 +29,18 @@ fn main() {
     let mut siv = Cursive::new();
     siv.set_fps(2);
 
-    let canvas = BoxView::with_full_screen(Canvas::new(State::new(siv.screen_size().pair()))
-        .with_draw(|printer, state| state.draw(printer))
-        .with_on_event(|event, state| match event {
-            Event::Char('q') => EventResult::Ignored,
-            Event::Key(Key::Up) => state.step(Some(Direction::North)),
-            Event::Key(Key::Down) => state.step(Some(Direction::South)),
-            Event::Key(Key::Left) => state.step(Some(Direction::West)),
-            Event::Key(Key::Right) => state.step(Some(Direction::East)),
-            _ => state.step(None),
-        }));
+    let canvas = BoxView::with_full_screen(
+        Canvas::new(State::new(siv.screen_size().pair()))
+            .with_draw(|printer, state| state.draw(printer))
+            .with_on_event(|event, state| match event {
+                Event::Char('q') => EventResult::Ignored,
+                Event::Key(Key::Up) => state.step(Some(Direction::North)),
+                Event::Key(Key::Down) => state.step(Some(Direction::South)),
+                Event::Key(Key::Left) => state.step(Some(Direction::West)),
+                Event::Key(Key::Right) => state.step(Some(Direction::East)),
+                _ => state.step(None),
+            }),
+    );
 
     siv.add_fullscreen_layer(canvas);
 
@@ -69,16 +71,17 @@ impl State {
             printer.print(*loc, " ");
         });
 
-        printer.with_color(ColorStyle::HighlightInactive,
-                           |printer| for loc in &self.food {
-                               printer.print(*loc, " ");
-                           });
+        printer.with_color(ColorStyle::HighlightInactive, |printer| for loc in
+            &self.food
+        {
+            printer.print(*loc, " ");
+        });
 
         printer.print((1, 1), format!("{}", self.snake.len()).as_str());
     }
 
     pub fn step(&mut self, direction: Option<Direction>) -> EventResult {
-        use std::__rand::*;
+        use rand::*;
 
         let direction = direction.unwrap_or(self.direction);
 
@@ -87,15 +90,17 @@ impl State {
         if self.snake.iter().any(|l| *l == next) {
             // Lost!
             EventResult::with_cb(|siv| {
-                siv.add_layer(Dialog::around(TextView::new("You lost!"))
-                    .button("Ok", |s| s.quit()));
+                siv.add_layer(Dialog::around(TextView::new("You lost!")).button(
+                    "Ok",
+                    |s| s.quit(),
+                ));
             })
         } else {
             self.snake.push_front(next);
 
             if self.food.contains(&next) {
                 self.food.remove(&next);
-                for _ in 0..std::__rand::thread_rng().gen_range(1, 4) {
+                for _ in 0..thread_rng().gen_range(1, 4) {
                     self.add_random_food();
                 }
             } else {
@@ -140,8 +145,10 @@ impl State {
     }
 
     fn add_random_food(&mut self) {
-        use std::__rand::*;
-        self.food.insert((std::__rand::thread_rng().gen_range(0, self.size.0),
-                          std::__rand::thread_rng().gen_range(0, self.size.1)));
+        use rand::*;
+        self.food.insert((
+            thread_rng().gen_range(0, self.size.0),
+            thread_rng().gen_range(0, self.size.1),
+        ));
     }
 }
