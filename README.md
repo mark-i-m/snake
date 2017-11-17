@@ -11,3 +11,9 @@ To build and run:
 ```bash
 cargo run --release
 ```
+
+You will need to install `ncursesw`:
+
+```bash
+sudo apt install libncursesw5-dev
+```
