@@ -2,6 +2,7 @@
 extern crate rand;
 extern crate cursive;
 
+use std::cmp::min;
 use std::collections::{LinkedList, HashSet};
 
 use cursive::{Cursive, Printer};
@@ -23,6 +24,8 @@ struct State {
     direction: Direction,
     snake: LinkedList<(usize, usize)>,
     food: HashSet<(usize, usize)>,
+
+    prev_loc: LinkedList<(usize, usize)>,
 }
 
 fn main() {
@@ -34,10 +37,12 @@ fn main() {
             .with_draw(|printer, state| state.draw(printer))
             .with_on_event(|event, state| match event {
                 Event::Char('q') => EventResult::Ignored,
+                /*
                 Event::Key(Key::Up) => state.step(Some(Direction::North)),
                 Event::Key(Key::Down) => state.step(Some(Direction::South)),
                 Event::Key(Key::Left) => state.step(Some(Direction::West)),
                 Event::Key(Key::Right) => state.step(Some(Direction::East)),
+                */
                 _ => state.step(None),
             }),
     );
@@ -47,6 +52,17 @@ fn main() {
     siv.add_global_callback('q', |s| s.quit());
 
     siv.run();
+}
+
+fn distance(
+    (sizex, sizey): (usize, usize),
+    (ax, ay): (usize, usize),
+    (bx, by): (usize, usize),
+) -> usize {
+    let x_dist = if ax > bx { ax - bx } else { bx - ax };
+    let y_dist = if ay > by { ay - by } else { by - ay };
+
+    min(x_dist, sizex - x_dist) + min(y_dist, sizey - y_dist)
 }
 
 impl State {
@@ -59,11 +75,79 @@ impl State {
             direction: Direction::East,
             snake: snake,
             food: HashSet::new(),
+
+            prev_loc: LinkedList::new(),
         };
 
         state.add_random_food();
 
         state
+    }
+
+    // Higher rank is worse
+    fn rank(&self, direction: Direction) -> isize {
+        let loc = self.next_loc(direction);
+
+        let food_rank: isize = self.food
+            .iter()
+            .map(|&food| distance(self.size, loc, food) as isize)
+            .min()
+            .unwrap();
+
+        let body_size = self.snake.len();
+        let body_rank: isize = self.snake
+            .iter()
+            .take(body_size - 1)
+            .map(|&body| distance(self.size, loc, body) as isize)
+            .sum();
+
+        const HISTORY: usize = 500;
+        let been_there = if self.prev_loc.iter().take(HISTORY).any(|&prev| prev == loc) {
+            1000
+        } else {
+            0
+        };
+
+        let is_loss = if self.snake.iter().any(|&body| body == loc) {
+            100000
+        } else {
+            0
+        };
+
+        let is_eat = if self.food.iter().any(|&food| food == loc) {
+            10000
+        } else {
+            0
+        };
+
+        let is_dead_end = if self.snake
+            .iter()
+            .take(body_size - 1)
+            .map(|&body| distance(self.size, loc, body) as isize)
+            .filter(|&d| d < 5)
+            .count() > 1
+        {
+            10000
+        } else {
+            0
+        };
+
+        is_loss + food_rank + been_there - body_rank - is_eat + is_dead_end
+    }
+
+    fn predict(&self) -> Direction {
+        let mut ranked: Vec<(Direction, isize)> = vec![
+            Direction::North,
+            Direction::East,
+            Direction::West,
+            Direction::South,
+        ].into_iter()
+            .map(|d| (d, self.rank(d)))
+            .collect();
+
+        ranked.sort_by_key(|&(_, r)| r);
+
+        ranked.get(0).map(|&(d, _)| d).unwrap()
     }
 
     pub fn draw(&self, printer: &Printer) {
@@ -80,14 +164,14 @@ impl State {
         printer.print((1, 1), format!("{}", self.snake.len()).as_str());
     }
 
-    pub fn step(&mut self, direction: Option<Direction>) -> EventResult {
+    pub fn step(&mut self, _direction: Option<Direction>) -> EventResult {
         use rand::*;
 
-        let direction = direction.unwrap_or(self.direction);
+        let direction = self.predict();
 
         let next = self.next_loc(direction);
 
-        if self.snake.iter().any(|l| *l == next) {
+        if self.snake.iter().any(|&l| l == next) {
             // Lost!
             EventResult::with_cb(|siv| {
                 siv.add_layer(Dialog::around(TextView::new("You lost!")).button(
@@ -97,6 +181,8 @@ impl State {
             })
         } else {
             self.snake.push_front(next);
+
+            self.prev_loc.push_front(next);
 
             if self.food.contains(&next) {
                 self.food.remove(&next);
@@ -126,7 +212,7 @@ impl State {
         };
 
         let new_x = if new_x < 0 {
-            self.size.0
+            self.size.0 - 1
         } else if new_x >= (self.size.0 as isize) {
             0
         } else {
@@ -134,7 +220,7 @@ impl State {
         };
 
         let new_y = if new_y < 0 {
-            self.size.1
+            self.size.1 - 1
         } else if new_y >= (self.size.1 as isize) {
             0
         } else {
