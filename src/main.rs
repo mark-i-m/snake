@@ -4,13 +4,16 @@ extern crate cursive;
 
 use std::cmp::min;
 use std::collections::{LinkedList, HashSet};
+use std::time::{Duration, Instant};
 
 use cursive::{Cursive, Printer};
 use cursive::views::{BoxView, Canvas, TextView, Dialog};
-use cursive::event::{Key, Event, EventResult};
+use cursive::event::{/*Key,*/ Event, EventResult};
 use cursive::theme::ColorStyle;
 
-#[derive(Debug, Clone, Copy)]
+const MAX_DEPTH: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
     North,
     South,
@@ -18,14 +21,22 @@ enum Direction {
     West,
 }
 
+type Snake = LinkedList<(usize, usize)>;
+
 #[derive(Debug)]
 struct State {
     size: (usize, usize),
     direction: Direction,
-    snake: LinkedList<(usize, usize)>,
+    snake: Snake,
     food: HashSet<(usize, usize)>,
+}
 
-    prev_loc: LinkedList<(usize, usize)>,
+#[derive(Debug, Clone)]
+struct SearchState<'s> {
+    original: &'s State,
+    search_snake: Snake,
+    search_food: HashSet<(usize, usize)>,
+    ate: bool,
 }
 
 fn main() {
@@ -75,8 +86,6 @@ impl State {
             direction: Direction::East,
             snake: snake,
             food: HashSet::new(),
-
-            prev_loc: LinkedList::new(),
         };
 
         state.add_random_food();
@@ -84,65 +93,18 @@ impl State {
         state
     }
 
-    // Higher rank is worse
-    fn rank(&self, direction: Direction) -> isize {
-        let loc = self.next_loc(direction);
-
-        let food_rank: isize = self.food
-            .iter()
-            .map(|&food| distance(self.size, loc, food) as isize)
-            .min()
-            .unwrap();
-
-        let body_size = self.snake.len();
-        let body_rank: isize = self.snake
-            .iter()
-            .take(body_size - 1)
-            .map(|&body| distance(self.size, loc, body) as isize)
-            .sum();
-
-        const HISTORY: usize = 500;
-        let been_there = if self.prev_loc.iter().take(HISTORY).any(|&prev| prev == loc) {
-            1000
-        } else {
-            0
-        };
-
-        let is_loss = if self.snake.iter().any(|&body| body == loc) {
-            100000
-        } else {
-            0
-        };
-
-        let is_eat = if self.food.iter().any(|&food| food == loc) {
-            10000
-        } else {
-            0
-        };
-
-        let is_dead_end = if self.snake
-            .iter()
-            .take(body_size - 1)
-            .map(|&body| distance(self.size, loc, body) as isize)
-            .filter(|&d| d < 5)
-            .count() > 1
-        {
-            10000
-        } else {
-            0
-        };
-
-        is_loss + food_rank + been_there - body_rank - is_eat + is_dead_end
-    }
-
-    fn predict(&self) -> Direction {
+    fn choose_next_action(&self) -> Direction {
+        let fps = self.snake.len() as u64;
+        let time_bound = Instant::now() + Duration::from_millis(1000u64 / fps);
+        let search_state = SearchState::new(self);
         let mut ranked: Vec<(Direction, isize)> = vec![
             Direction::North,
             Direction::East,
             Direction::West,
             Direction::South,
         ].into_iter()
-            .map(|d| (d, self.rank(d)))
+            .map(|d| (d, search_state.step(d)))
+            .map(|(d, s)| (d, s.rank(d, time_bound, MAX_DEPTH)))
             .collect();
 
         ranked.sort_by_key(|&(_, r)| r);
@@ -167,9 +129,9 @@ impl State {
     pub fn step(&mut self, _direction: Option<Direction>) -> EventResult {
         use rand::*;
 
-        let direction = self.predict();
+        let direction = self.choose_next_action();
 
-        let next = self.next_loc(direction);
+        let next = State::next_loc(&self.snake, direction, self.size);
 
         if self.snake.iter().any(|&l| l == next) {
             // Lost!
@@ -181,8 +143,6 @@ impl State {
             })
         } else {
             self.snake.push_front(next);
-
-            self.prev_loc.push_front(next);
 
             if self.food.contains(&next) {
                 self.food.remove(&next);
@@ -200,8 +160,16 @@ impl State {
         }
     }
 
-    fn next_loc(&self, direction: Direction) -> (usize, usize) {
-        let &(x, y) = self.snake.front().unwrap();
+    fn add_random_food(&mut self) {
+        use rand::*;
+        self.food.insert((
+            thread_rng().gen_range(0, self.size.0),
+            thread_rng().gen_range(0, self.size.1),
+        ));
+    }
+
+    fn next_loc(snake: &Snake, direction: Direction, size: (usize, usize)) -> (usize, usize) {
+        let &(x, y) = snake.front().unwrap();
         let (x, y) = (x as isize, y as isize);
 
         let (new_x, new_y) = match direction {
@@ -212,16 +180,16 @@ impl State {
         };
 
         let new_x = if new_x < 0 {
-            self.size.0 - 1
-        } else if new_x >= (self.size.0 as isize) {
+            size.0 - 1
+        } else if new_x >= (size.0 as isize) {
             0
         } else {
             new_x as usize
         };
 
         let new_y = if new_y < 0 {
-            self.size.1 - 1
-        } else if new_y >= (self.size.1 as isize) {
+            size.1 - 1
+        } else if new_y >= (size.1 as isize) {
             0
         } else {
             new_y as usize
@@ -229,12 +197,102 @@ impl State {
 
         (new_x, new_y)
     }
+}
 
-    fn add_random_food(&mut self) {
-        use rand::*;
-        self.food.insert((
-            thread_rng().gen_range(0, self.size.0),
-            thread_rng().gen_range(0, self.size.1),
-        ));
+impl<'s> SearchState<'s> {
+    pub fn new(state: &'s State) -> SearchState<'s> {
+        SearchState {
+            original: state,
+            search_snake: state.snake.clone(),
+            search_food: state.food.clone(),
+            ate: false,
+        }
+    }
+
+    // Higher rank is worse
+    pub fn rank(&self, direction: Direction, time_bound: Instant, depth_bound: usize) -> isize {
+        // Have we lost?
+        if self.is_loss() {
+            return 10_000_000;
+        }
+
+        // Have we eaten?
+        let eat_bonus = if self.is_eat() { -1000 } else { 0 };
+
+        // Are we out of time?
+        if Instant::now() >= time_bound {
+            return self.quick_rank(direction);
+        }
+
+        // Too far in the future?
+        if depth_bound == 0 {
+            return self.quick_rank(direction);
+        }
+
+        let mut ranked: Vec<_> = vec![
+            Direction::North,
+            Direction::East,
+            Direction::West,
+            Direction::South,
+        ].into_iter()
+            .map(|d| {
+                self.step(d).rank(direction, time_bound, depth_bound - 1)
+            })
+            .collect();
+
+        ranked.sort();
+
+        ranked.get(0).unwrap() + eat_bonus
+    }
+
+    fn is_loss(&self) -> bool {
+        let head = *self.search_snake.front().unwrap();
+        self.search_snake.iter().skip(1).any(|&b| b == head)
+    }
+
+    fn is_eat(&self) -> bool {
+        self.ate
+    }
+
+    fn quick_rank(&self, direction: Direction) -> isize {
+        let head = *self.search_snake.front().unwrap();
+        let food_rank = self.search_food
+            .iter()
+            .map(|&food| distance(self.original.size, head, food) as isize)
+            .min()
+            .unwrap_or(0);
+
+        // Incentives doing the same thing again
+        let same_direction = if direction == self.original.direction {
+            -1
+        } else {
+            0
+        };
+
+        food_rank + same_direction
+    }
+
+    pub fn step(&self, direction: Direction) -> SearchState {
+        let mut new_snake = self.search_snake.clone();
+        let mut new_food = self.search_food.clone();
+
+        let next = State::next_loc(&new_snake, direction, self.original.size);
+
+        new_snake.push_front(next);
+
+        let ate = if new_food.contains(&next) {
+            new_food.remove(&next);
+            true
+        } else {
+            new_snake.pop_back();
+            false
+        };
+
+        SearchState {
+            original: self.original,
+            search_snake: new_snake,
+            search_food: new_food,
+            ate,
+        }
     }
 }
