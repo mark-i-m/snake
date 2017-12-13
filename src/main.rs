@@ -11,7 +11,8 @@ use cursive::views::{BoxView, Canvas, TextView, Dialog};
 use cursive::event::{/*Key,*/ Event, EventResult};
 use cursive::theme::ColorStyle;
 
-const MAX_DEPTH: usize = 20;
+const MAX_DEPTH: usize = 13;
+const LOSS_PENALTY: isize = 100_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -109,6 +110,12 @@ impl State {
 
         ranked.sort_by_key(|&(_, r)| r);
 
+        // There should always be one direction that is an automatic loss
+        if !ranked.iter().any(|&(_, x)| x >= LOSS_PENALTY) && self.snake.len() > 2 {
+            println!("{:?}", ranked);
+            loop {}
+        }
+
         ranked.get(0).map(|&(d, _)| d).unwrap()
     }
 
@@ -131,9 +138,24 @@ impl State {
 
         let direction = self.choose_next_action();
 
+        // Move the snake
         let next = State::next_loc(&self.snake, direction, self.size);
+        self.snake.push_front(next);
 
-        if self.snake.iter().any(|&l| l == next) {
+        if self.food.contains(&next) {
+            self.food.remove(&next);
+            for _ in 0..thread_rng().gen_range(1, 4) {
+                self.add_random_food();
+            }
+        } else {
+            self.snake.pop_back();
+        }
+
+        self.direction = direction;
+
+        // Check for loss
+        let head = *self.snake.front().unwrap();
+        if self.snake.iter().skip(1).any(|&l| l == head) {
             // Lost!
             EventResult::with_cb(|siv| {
                 siv.add_layer(Dialog::around(TextView::new("You lost!")).button(
@@ -142,19 +164,6 @@ impl State {
                 ));
             })
         } else {
-            self.snake.push_front(next);
-
-            if self.food.contains(&next) {
-                self.food.remove(&next);
-                for _ in 0..thread_rng().gen_range(1, 4) {
-                    self.add_random_food();
-                }
-            } else {
-                self.snake.pop_back();
-            }
-
-            self.direction = direction;
-
             let new_speed = self.snake.len() as u32;
             EventResult::with_cb(move |siv| siv.set_fps(new_speed))
         }
@@ -209,6 +218,7 @@ impl<'s> SearchState<'s> {
         }
     }
 
+    /*
     // Higher rank is worse
     pub fn rank(&self, direction: Direction, time_bound: Instant, depth_bound: usize) -> isize {
         // Have we lost?
@@ -244,6 +254,58 @@ impl<'s> SearchState<'s> {
 
         ranked.get(0).unwrap() + eat_bonus
     }
+    */
+
+    // Higher rank is worse
+    pub fn rank(&self, direction: Direction, time_bound: Instant, depth_bound: usize) -> isize {
+        let mut min_rank = LOSS_PENALTY; // We want to do better than losing
+
+        let mut queue = LinkedList::new();
+        queue.push_back((self.clone(), 0, 0));
+
+        while !queue.is_empty() {
+            let (next, parent_score, depth) = queue.pop_front().unwrap();
+
+            // The rank for `next`
+            let mut rank = parent_score;
+
+            // Have we lost?
+            if next.is_loss() {
+                // Obviously, we don't want to go down this path :P
+                continue;
+            }
+
+            // Have we eaten?
+            rank += if next.is_eat() { -1000 } else { 0 };
+
+            // Are we out of time?
+            if Instant::now() >= time_bound {
+                rank += self.quick_rank(direction);
+                min_rank = min(min_rank, rank);
+                continue;
+            }
+
+            // Too far in the future?
+            if depth >= depth_bound {
+                rank += self.quick_rank(direction);
+                min_rank = min(min_rank, rank);
+                continue;
+            }
+
+            // Enqueue all possible next actions to explore
+            let successors = vec![
+                Direction::North,
+                Direction::East,
+                Direction::West,
+                Direction::South,
+            ].into_iter()
+                .map(|d| (self.step(d), rank, depth + 1));
+
+            queue.extend(successors);
+        }
+
+        return min_rank;
+    }
 
     fn is_loss(&self) -> bool {
         let head = *self.search_snake.front().unwrap();
@@ -262,6 +324,13 @@ impl<'s> SearchState<'s> {
             .min()
             .unwrap_or(0);
 
+        let body_size = self.search_snake.len();
+        let body_rank: isize = self.search_snake
+            .iter()
+            .take(body_size - 1)
+            .map(|&body| distance(self.original.size, head, body) as isize)
+            .sum();
+
         // Incentives doing the same thing again
         let same_direction = if direction == self.original.direction {
             -1
@@ -269,7 +338,7 @@ impl<'s> SearchState<'s> {
             0
         };
 
-        food_rank + same_direction
+        food_rank + same_direction - (body_rank / body_size as isize)
     }
 
     pub fn step(&self, direction: Direction) -> SearchState {
