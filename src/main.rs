@@ -1,6 +1,7 @@
 
 extern crate rand;
 extern crate cursive;
+extern crate rayon;
 
 use std::cmp::min;
 use std::collections::{LinkedList, HashSet};
@@ -10,6 +11,8 @@ use cursive::{Cursive, Printer};
 use cursive::views::{BoxView, Canvas, TextView, Dialog};
 use cursive::event::{/*Key,*/ Event, EventResult};
 use cursive::theme::ColorStyle;
+
+use rayon::prelude::*;
 
 const MAX_DEPTH: usize = 13;
 const LOSS_PENALTY: isize = 100_000_000;
@@ -218,44 +221,6 @@ impl<'s> SearchState<'s> {
         }
     }
 
-    /*
-    // Higher rank is worse
-    pub fn rank(&self, direction: Direction, time_bound: Instant, depth_bound: usize) -> isize {
-        // Have we lost?
-        if self.is_loss() {
-            return 10_000_000;
-        }
-
-        // Have we eaten?
-        let eat_bonus = if self.is_eat() { -1000 } else { 0 };
-
-        // Are we out of time?
-        if Instant::now() >= time_bound {
-            return self.quick_rank(direction);
-        }
-
-        // Too far in the future?
-        if depth_bound == 0 {
-            return self.quick_rank(direction);
-        }
-
-        let mut ranked: Vec<_> = vec![
-            Direction::North,
-            Direction::East,
-            Direction::West,
-            Direction::South,
-        ].into_iter()
-            .map(|d| {
-                self.step(d).rank(direction, time_bound, depth_bound - 1)
-            })
-            .collect();
-
-        ranked.sort();
-
-        ranked.get(0).unwrap() + eat_bonus
-    }
-    */
-
     // Higher rank is worse
     pub fn rank(&self, direction: Direction, time_bound: Instant, depth_bound: usize) -> isize {
         let mut min_rank = LOSS_PENALTY; // We want to do better than losing
@@ -338,7 +303,20 @@ impl<'s> SearchState<'s> {
             0
         };
 
-        food_rank + same_direction - (body_rank / body_size as isize)
+        // Avoid coming close to yourself
+        let is_dead_end = if self.search_snake
+            .iter()
+            .take(body_size - 1)
+            .map(|&body| distance(self.original.size, head, body) as isize)
+            .filter(|&d| d < 5)
+            .count() > 1
+        {
+            10000
+        } else {
+            0
+        };
+
+        food_rank + same_direction - (body_rank / body_size as isize) + is_dead_end
     }
 
     pub fn step(&self, direction: Direction) -> SearchState {
